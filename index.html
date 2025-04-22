@@ -2,20 +2,10 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>WebXR AR Grabbable Model</title>
+  <title>WebXR AR Grabbable Hologram Model</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-
-  <!-- Import map to resolve bare module specifiers -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.150.1/build/three.module.js"
-    }
-  }
-  </script>
-
   <style>
     body { 
       margin: 0; 
@@ -64,16 +54,46 @@
   </div>
   
   <script type="module">
-    import * as THREE from 'three';
+    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
     import { ARButton } from 'https://unpkg.com/three@0.150.1/examples/jsm/webxr/ARButton.js';
     import { GLTFLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js';
 
     let camera, scene, renderer;
     let controller;
-    let grabCube = null;
+    let grabModel = null;
     let isGrabbing = false;
     let grabOffset = new THREE.Vector3();
-    
+    let clock = new THREE.Clock();
+
+    // Hologram shader material
+    const hologramMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 },
+        color: { value: new THREE.Color(0x00ffff) }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float time;
+        uniform vec3 color;
+        varying vec2 vUv;
+        void main() {
+          float scan = 0.5 + 0.5 * sin((vUv.y + time * 0.5) * 30.0);
+          float edgeFade = smoothstep(0.0, 0.1, vUv.y) * smoothstep(1.0, 0.9, vUv.y);
+          float alpha = scan * edgeFade;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
     init();
 
     function init() {
@@ -99,10 +119,10 @@
         if (navigator.xr) {
           navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
             if (supported) {
-              const sessionInit = { 
+              const sessionInit = {
                 requiredFeatures: ['hit-test'],
-                optionalFeatures: ['dom-overlay'], 
-                domOverlay: { root: document.body } 
+                optionalFeatures: ['dom-overlay'],
+                domOverlay: { root: document.body }
               };
               navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
             } else {
@@ -152,24 +172,22 @@
       loader.load(
         'tmpmdxokgkr.glb',
         (gltf) => {
-          grabCube = gltf.scene;
-          grabCube.traverse((child) => {
+          grabModel = gltf.scene;
+          grabModel.traverse((child) => {
             if (child.isMesh) {
+              child.material = hologramMaterial.clone();
               child.castShadow = true;
               child.receiveShadow = true;
             }
           });
-          grabCube.scale.set(0.2, 0.2, 0.2);
-          grabCube.position.set(0, 0, -0.5);
-          scene.add(grabCube);
+          grabModel.scale.set(0.1, 0.1, 0.1);
+          grabModel.position.set(0, 0, -0.5);
+          scene.add(grabModel);
           updateStatus('Model loaded! Point your controller at it and squeeze to grab.');
         },
-        (xhr) => {
-          const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
-          updateStatus(`Loading model... ${percent}%`);
-        },
+        undefined,
         (error) => {
-          console.error('An error happened', error);
+          console.error(error);
           updateStatus('Failed to load model.');
         }
       );
@@ -183,29 +201,23 @@
       controller.addEventListener('squeezestart', onSqueezeStart);
       controller.addEventListener('squeezeend', onSqueezeEnd);
       scene.add(controller);
-
-      const controllerGeometry = new THREE.CylinderGeometry(0.01, 0.02, 0.1, 16);
-      const controllerMaterial = new THREE.MeshStandardMaterial({
-        roughness: 0.3,
-        metalness: 0.5
-      });
-      const controllerMesh = new THREE.Mesh(controllerGeometry, controllerMaterial);
-      controllerMesh.material.color.setHex(0xFF4500);
-      controllerMesh.rotation.x = Math.PI / 2;
-      controller.add(controllerMesh);
+      const geometry = new THREE.CylinderGeometry(0.01, 0.02, 0.1, 16);
+      const material = new THREE.MeshStandardMaterial({ color: 0xFF4500, roughness: 0.3, metalness: 0.5 });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.rotation.x = Math.PI / 2;
+      controller.add(mesh);
     }
 
     function onSqueezeStart() {
-      if (!grabCube) return;
-      const pos = new THREE.Vector3();
-      controller.getWorldPosition(pos);
-      const distance = pos.distanceTo(grabCube.position);
-      if (distance < 0.3) {
+      if (!grabModel) return;
+      const controllerPos = new THREE.Vector3();
+      controller.getWorldPosition(controllerPos);
+      if (controllerPos.distanceTo(grabModel.position) < 0.3) {
         isGrabbing = true;
-        grabOffset.copy(grabCube.position).sub(pos);
-        grabCube.traverse((child) => {
-          if (child.material) {
-            child.material.emissive.set(0x00ff00);
+        grabOffset.copy(grabModel.position).sub(controllerPos);
+        grabModel.traverse((child) => {
+          if (child.isMesh) {
+            child.material.emissive = new THREE.Color(0x00ff00);
             child.material.emissiveIntensity = 0.5;
           }
         });
@@ -214,26 +226,32 @@
     }
 
     function onSqueezeEnd() {
-      if (isGrabbing) {
-        isGrabbing = false;
-        grabCube.traverse((child) => {
-          if (child.material) {
-            child.material.emissive.set(0x000000);
-            child.material.emissiveIntensity = 0;
-          }
-        });
-        updateStatus('Released! Point at model and squeeze to grab again.');
-      }
+      if (!isGrabbing) return;
+      isGrabbing = false;
+      grabModel.traverse((child) => {
+        if (child.isMesh) {
+          child.material.emissive.set(0x000000);
+          child.material.emissiveIntensity = 0;
+        }
+      });
+      updateStatus('Released! Point at model and squeeze to grab again.');
     }
 
     function render() {
-      if (isGrabbing && grabCube) {
-        const pos = new THREE.Vector3();
-        controller.getWorldPosition(pos);
-        grabCube.position.copy(pos).add(grabOffset);
-      } else if (grabCube) {
-        grabCube.rotation.y += 0.005;
+      const delta = clock.getDelta();
+      hologramMaterial.uniforms.time.value += delta;
+
+      if (grabModel) {
+        if (isGrabbing) {
+          const controllerPos = new THREE.Vector3();
+          controller.getWorldPosition(controllerPos);
+          grabModel.position.copy(controllerPos).add(grabOffset);
+          grabModel.rotation.y += 0.01;
+        } else {
+          grabModel.rotation.y += 0.005;
+        }
       }
+
       renderer.render(scene, camera);
     }
   </script>
