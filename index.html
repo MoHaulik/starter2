@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebXR AR Grabbable Model</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+
+  <!-- Import map to resolve bare module specifiers -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js"
+    }
+  }
+  </script>
+
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      z-index: 1;
+    }
+    #start-button {
+      padding: 12px 24px;
+      font-size: 18px;
+      background: rgba(72, 118, 255, 0.8);
+      color: white;
+      border: none;
+      border-radius: 30px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    #start-button:hover {
+      background: rgba(72, 118, 255, 1);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+    }
+    #status {
+      margin-top: 15px;
+      font-size: 16px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      padding: 10px 15px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <button id="start-button">Start AR Experience</button>
+    <div id="status"></div>
+  </div>
+  
+  <script type="module">
+    import * as THREE from 'three';
+    import { ARButton } from 'https://unpkg.com/three@0.150.1/examples/jsm/webxr/ARButton.js';
+    import { GLTFLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js';
+
+    let camera, scene, renderer;
+    let controller;
+    let grabCube = null;
+    let isGrabbing = false;
+    let grabOffset = new THREE.Vector3();
+    
+    init();
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      const ambientLight = new THREE.AmbientLight(0x404040, 2);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      directionalLight.position.set(1, 1, 1);
+      directionalLight.castShadow = true;
+      scene.add(directionalLight);
+
+      document.getElementById('start-button').addEventListener('click', () => {
+        if (navigator.xr) {
+          navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+            if (supported) {
+              const sessionInit = { 
+                requiredFeatures: ['hit-test'],
+                optionalFeatures: ['dom-overlay'], 
+                domOverlay: { root: document.body } 
+              };
+              navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
+            } else {
+              updateStatus('WebXR AR session is not supported on this device.');
+            }
+          });
+        } else {
+          updateStatus('WebXR is not supported in this browser.');
+        }
+      });
+
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function updateStatus(message) {
+      const statusElement = document.getElementById('status');
+      statusElement.style.display = 'block';
+      statusElement.textContent = message;
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onSessionStarted(session) {
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      document.getElementById('start-button').style.display = 'none';
+      updateStatus('Looking for surface...');
+
+      createGrabbableModel();
+      setupController();
+
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+    }
+
+    function onSessionEnd() {
+      updateStatus('AR session ended');
+      document.getElementById('start-button').style.display = 'block';
+    }
+
+    function createGrabbableModel() {
+      const loader = new GLTFLoader();
+      loader.load(
+        'tmpmdxokgkr.glb',
+        (gltf) => {
+          grabCube = gltf.scene;
+          grabCube.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+            }
+          });
+          grabCube.scale.set(0.2, 0.2, 0.2);
+          grabCube.position.set(0, 0, -0.5);
+          scene.add(grabCube);
+          updateStatus('Model loaded! Point your controller at it and squeeze to grab.');
+        },
+        (xhr) => {
+          const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+          updateStatus(`Loading model... ${percent}%`);
+        },
+        (error) => {
+          console.error('An error happened', error);
+          updateStatus('Failed to load model.');
+        }
+      );
+    }
+
+    function setupController() {
+      controller = renderer.xr.getController(0);
+      controller.addEventListener('connected', (event) => {
+        updateStatus(`Controller connected: ${event.data.handedness}`);
+      });
+      controller.addEventListener('squeezestart', onSqueezeStart);
+      controller.addEventListener('squeezeend', onSqueezeEnd);
+      scene.add(controller);
+
+      const controllerGeometry = new THREE.CylinderGeometry(0.01, 0.02, 0.1, 16);
+      const controllerMaterial = new THREE.MeshStandardMaterial({
+        roughness: 0.3,
+        metalness: 0.5
+      });
+      const controllerMesh = new THREE.Mesh(controllerGeometry, controllerMaterial);
+      controllerMesh.material.color.setHex(0xFF4500);
+      controllerMesh.rotation.x = Math.PI / 2;
+      controller.add(controllerMesh);
+    }
+
+    function onSqueezeStart() {
+      if (!grabCube) return;
+      const pos = new THREE.Vector3();
+      controller.getWorldPosition(pos);
+      const distance = pos.distanceTo(grabCube.position);
+      if (distance < 0.3) {
+        isGrabbing = true;
+        grabOffset.copy(grabCube.position).sub(pos);
+        grabCube.traverse((child) => {
+          if (child.material) {
+            child.material.emissive.set(0x00ff00);
+            child.material.emissiveIntensity = 0.5;
+          }
+        });
+        updateStatus('Grabbed! Move the controller to reposition the model.');
+      }
+    }
+
+    function onSqueezeEnd() {
+      if (isGrabbing) {
+        isGrabbing = false;
+        grabCube.traverse((child) => {
+          if (child.material) {
+            child.material.emissive.set(0x000000);
+            child.material.emissiveIntensity = 0;
+          }
+        });
+        updateStatus('Released! Point at model and squeeze to grab again.');
+      }
+    }
+
+    function render() {
+      if (isGrabbing && grabCube) {
+        const pos = new THREE.Vector3();
+        controller.getWorldPosition(pos);
+        grabCube.position.copy(pos).add(grabOffset);
+      } else if (grabCube) {
+        grabCube.rotation.y += 0.005;
+      }
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
