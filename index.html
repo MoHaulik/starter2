@@ -55,12 +55,38 @@
       backdrop-filter: blur(5px);
       box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
+    /* Add scale controls */
+    #scale-controls {
+      margin-top: 15px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      padding: 10px 15px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .scale-button {
+      margin: 5px;
+      padding: 8px 16px;
+      font-size: 14px;
+      background: rgba(72, 118, 255, 0.8);
+      color: white;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
   <div id="overlay">
     <button id="start-button">Start AR Experience</button>
     <div id="status"></div>
+    <div id="scale-controls">
+      <button class="scale-button" id="scale-down">Scale Down (-)</button>
+      <button class="scale-button" id="scale-up">Scale Up (+)</button>
+      <div id="scale-value">Current scale: 0.01</div>
+    </div>
   </div>
   
   <script type="module">
@@ -73,6 +99,8 @@
     let grabCube = null;
     let isGrabbing = false;
     let grabOffset = new THREE.Vector3();
+    // Set a much smaller initial scale
+    let currentScale = 0.01;
     
     init();
 
@@ -83,7 +111,7 @@
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.xr.enabled = true;
-      renderer.setClearColor(0x000000, 0);
+      renderer.setClearColor(0x000000, L
       renderer.shadowMap.enabled = true;
       document.body.appendChild(renderer.domElement);
 
@@ -114,6 +142,23 @@
         }
       });
 
+      // Add scale control event listeners
+      document.getElementById('scale-down').addEventListener('click', () => {
+        if (grabCube) {
+          currentScale = Math.max(0.001, currentScale - 0.005);
+          grabCube.scale.set(currentScale, currentScale, currentScale);
+          document.getElementById('scale-value').textContent = `Current scale: ${currentScale.toFixed(3)}`;
+        }
+      });
+
+      document.getElementById('scale-up').addEventListener('click', () => {
+        if (grabCube) {
+          currentScale = Math.min(0.2, currentScale + 0.005);
+          grabCube.scale.set(currentScale, currentScale, currentScale);
+          document.getElementById('scale-value').textContent = `Current scale: ${currentScale.toFixed(3)}`;
+        }
+      });
+
       window.addEventListener('resize', onWindowResize);
     }
 
@@ -133,6 +178,7 @@
       renderer.xr.setReferenceSpaceType('local');
       renderer.xr.setSession(session);
       document.getElementById('start-button').style.display = 'none';
+      document.getElementById('scale-controls').style.display = 'block';
       updateStatus('Looking for surface...');
 
       createGrabbableModel();
@@ -145,6 +191,7 @@
     function onSessionEnd() {
       updateStatus('AR session ended');
       document.getElementById('start-button').style.display = 'block';
+      document.getElementById('scale-controls').style.display = 'none';
     }
 
     function createGrabbableModel() {
@@ -159,7 +206,8 @@
               child.receiveShadow = true;
             }
           });
-          grabCube.scale.set(0.2, 0.2, 0.2);
+          // Set to much smaller scale (1/20 of original)
+          grabCube.scale.set(currentScale, currentScale, currentScale);
           grabCube.position.set(0, 0, -0.5);
           scene.add(grabCube);
           updateStatus('Model loaded! Point your controller at it and squeeze to grab.');
